@@ -31,7 +31,9 @@ def draw_hand_landmarks(frame, hand_landmarks_list, w, h):
 # -------------------------------
 # Download hand_landmarker model if needed
 # -------------------------------
-MODEL_PATH = os.path.join(os.path.dirname(__file__), "hand_landmarker.task")
+MODELS_DIR = os.path.join(os.path.dirname(__file__), "..", "models")
+os.makedirs(MODELS_DIR, exist_ok=True)
+MODEL_PATH = os.path.join(MODELS_DIR, "hand_landmarker.task")
 if not os.path.exists(MODEL_PATH):
     print("Downloading hand_landmarker model...")
     try:

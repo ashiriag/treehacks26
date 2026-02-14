@@ -48,8 +48,9 @@ Perfect for virtual classrooms via Zoom, in-person tutoring, or self-study.
 
 ```bash
 cd /Users/lukeqiao/Documents/Projects/treehacks_2026
-source .venv/bin/activate
-python main_app.py
+uv venv
+uv sync
+uv run launcher.py
 ```
 
 ### First Run
