@@ -1,0 +1,156 @@
+{
+  "characters": [
+    {
+      "char": "一",
+      "pinyin": "yi1",
+      "english": "one",
+      "strokes": [
+        [[0.15, 0.50], [0.85, 0.50]]
+      ],
+      "stroke_directions": [
+        {"direction": "left_to_right", "angle": 0}
+      ]
+    },
+    {
+      "char": "二",
+      "pinyin": "er4",
+      "english": "two",
+      "strokes": [
+        [[0.20, 0.40], [0.80, 0.40]],
+        [[0.15, 0.60], [0.85, 0.60]]
+      ],
+      "stroke_directions": [
+        {"direction": "left_to_right", "angle": 0},
+        {"direction": "left_to_right", "angle": 0}
+      ]
+    },
+    {
+      "char": "十",
+      "pinyin": "shi2",
+      "english": "ten",
+      "strokes": [
+        [[0.50, 0.20], [0.50, 0.80]],
+        [[0.20, 0.50], [0.80, 0.50]]
+      ],
+      "stroke_directions": [
+        {"direction": "top_to_bottom", "angle": 90},
+        {"direction": "left_to_right", "angle": 0}
+      ]
+    },
+    {
+      "char": "人",
+      "pinyin": "ren2",
+      "english": "person",
+      "strokes": [
+        [[0.50, 0.20], [0.30, 0.80]],
+        [[0.50, 0.20], [0.70, 0.80]]
+      ],
+      "stroke_directions": [
+        {"direction": "tilted_down_left", "angle": 135},
+        {"direction": "tilted_down_right", "angle": 45}
+      ]
+    },
+    {
+      "char": "口",
+      "pinyin": "kou3",
+      "english": "mouth",
+      "strokes": [
+        [[0.30, 0.25], [0.30, 0.75]],
+        [[0.30, 0.25], [0.70, 0.25]],
+        [[0.70, 0.25], [0.70, 0.75]],
+        [[0.30, 0.75], [0.70, 0.75]]
+      ],
+      "stroke_directions": [
+        {"direction": "top_to_bottom", "angle": 90},
+        {"direction": "left_to_right", "angle": 0},
+        {"direction": "top_to_bottom", "angle": 90},
+        {"direction": "left_to_right", "angle": 0}
+      ]
+    },
+    {
+      "char": "水",
+      "pinyin": "shui3",
+      "english": "water",
+      "strokes": [
+        [[0.50, 0.15], [0.50, 0.85]],
+        [[0.30, 0.40], [0.70, 0.40]],
+        [[0.30, 0.60], [0.70, 0.60]]
+      ],
+      "stroke_directions": [
+        {"direction": "top_to_bottom", "angle": 90},
+        {"direction": "left_to_right", "angle": 0},
+        {"direction": "left_to_right", "angle": 0}
+      ]
+    },
+    {
+      "char": "火",
+      "pinyin": "huo3",
+      "english": "fire",
+      "strokes": [
+        [[0.50, 0.20], [0.50, 0.60]],
+        [[0.30, 0.45], [0.70, 0.45]],
+        [[0.35, 0.60], [0.30, 0.80]],
+        [[0.65, 0.60], [0.70, 0.80]]
+      ],
+      "stroke_directions": [
+        {"direction": "top_to_bottom", "angle": 90},
+        {"direction": "left_to_right", "angle": 0},
+        {"direction": "tilted_down_left", "angle": 120},
+        {"direction": "tilted_down_right", "angle": 60}
+      ]
+    },
+    {
+      "char": "木",
+      "pinyin": "mu4",
+      "english": "tree/wood",
+      "strokes": [
+        [[0.50, 0.15], [0.50, 0.85]],
+        [[0.30, 0.25], [0.70, 0.25]],
+        [[0.30, 0.50], [0.70, 0.50]],
+        [[0.30, 0.75], [0.70, 0.75]]
+      ],
+      "stroke_directions": [
+        {"direction": "top_to_bottom", "angle": 90},
+        {"direction": "left_to_right", "angle": 0},
+        {"direction": "left_to_right", "angle": 0},
+        {"direction": "left_to_right", "angle": 0}
+      ]
+    },
+    {
+      "char": "金",
+      "pinyin": "jin1",
+      "english": "gold/metal",
+      "strokes": [
+        [[0.50, 0.15], [0.50, 0.85]],
+        [[0.25, 0.30], [0.75, 0.30]],
+        [[0.25, 0.50], [0.75, 0.50]],
+        [[0.25, 0.70], [0.75, 0.70]],
+        [[0.30, 0.85], [0.70, 0.85]]
+      ],
+      "stroke_directions": [
+        {"direction": "top_to_bottom", "angle": 90},
+        {"direction": "left_to_right", "angle": 0},
+        {"direction": "left_to_right", "angle": 0},
+        {"direction": "left_to_right", "angle": 0},
+        {"direction": "left_to_right", "angle": 0}
+      ]
+    },
+    {
+      "char": "土",
+      "pinyin": "tu3",
+      "english": "earth/soil",
+      "strokes": [
+        [[0.50, 0.20], [0.50, 0.80]],
+        [[0.25, 0.30], [0.75, 0.30]],
+        [[0.25, 0.65], [0.75, 0.65]],
+        [[0.25, 0.80], [0.75, 0.80]]
+      ],
+      "stroke_directions": [
+        {"direction": "top_to_bottom", "angle": 90},
+        {"direction": "left_to_right", "angle": 0},
+        {"direction": "left_to_right", "angle": 0},
+        {"direction": "left_to_right", "angle": 0}
+      ]
+    }
+  ]
+}
