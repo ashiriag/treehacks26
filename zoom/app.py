@@ -1,12 +1,16 @@
 import os
 import requests
-from flask import Flask, render_template, request, redirect, url_for
+from flask import Flask, render_template, request, redirect, url_for, jsonify
 
 app = Flask(__name__)
 
 CLIENT_ID = os.getenv("ZOOM_CLIENT_ID")
 CLIENT_SECRET = os.getenv("ZOOM_CLIENT_SECRET")
 ACCOUNT_ID = os.getenv("ZOOM_ACCOUNT_ID")
+
+# Local launcher endpoint (set via environment variable)
+# Example: "https://abcd1234.ngrok.io" or "http://localhost:5001" for local testing
+LAUNCHER_URL = os.getenv("LAUNCHER_URL", "http://localhost:5001")
 
 CHINESE_CHARACTERS = ["你", "好", "学", "习", "书"]  # your 5 demo characters
 
@@ -21,7 +25,8 @@ def get_s2s_token():
 def create_meeting(token):
     url = "https://api.zoom.us/v2/users/me/meetings"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    payload = {"topic": "Hackathon Demo", "type": 1, "settings": {"join_before_host": True}}
+    payload = {"topic": "Language Learning", "type": 1, "settings": {"join_before_host": True, "approval_type": 0,        # automatically approve participants
+        "waiting_room": False }}
     r = requests.post(url, headers=headers, json=payload)
     r.raise_for_status()
     return r.json()
@@ -50,6 +55,79 @@ def choose_characters():
 def select_character():
     selected = request.form.get("character")
     return render_template("index.html", selected_char=selected)
+
+# ===== API ENDPOINTS TO COMMUNICATE WITH LOCAL LAUNCHER =====
+
+@app.route("/api/send-character", methods=["POST"])
+def send_character():
+    """Send a character to the local launcher."""
+    try:
+        data = request.json
+        character = data.get("character")
+        
+        response = requests.post(
+            f"{LAUNCHER_URL}/api/character",
+            json={"character": character},
+            timeout=5
+        )
+        response.raise_for_status()
+        return jsonify({"status": "ok", "message": f"Sent character: {character}"})
+    except requests.exceptions.ConnectionError:
+        return jsonify({
+            "status": "error",
+            "message": "Could not reach launcher. Is it running? Set LAUNCHER_URL env var."
+        }), 500
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route("/api/send-mode", methods=["POST"])
+def send_mode():
+    """Change mode on the local launcher."""
+    try:
+        data = request.json
+        mode = data.get("mode")  # 1, 2, or 3
+        
+        response = requests.post(
+            f"{LAUNCHER_URL}/api/mode",
+            json={"mode": mode},
+            timeout=5
+        )
+        response.raise_for_status()
+        mode_names = {1: "Teaching", 2: "Pinyin Recognition", 3: "English Translation"}
+        return jsonify({"status": "ok", "message": f"Mode set to: {mode_names.get(mode)}"})
+    except requests.exceptions.ConnectionError:
+        return jsonify({"status": "error", "message": "Could not reach launcher"}), 500
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route("/api/send-action", methods=["POST"])
+def send_action():
+    """Trigger an action on the local launcher."""
+    try:
+        data = request.json
+        action = data.get("action")  # "submit", "clear", "next", etc
+        
+        response = requests.post(
+            f"{LAUNCHER_URL}/api/action",
+            json={"action": action},
+            timeout=5
+        )
+        response.raise_for_status()
+        return jsonify({"status": "ok", "message": f"Action triggered: {action}"})
+    except requests.exceptions.ConnectionError:
+        return jsonify({"status": "error", "message": "Could not reach launcher"}), 500
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route("/api/launcher-status", methods=["GET"])
+def launcher_status():
+    """Check if the launcher is running."""
+    try:
+        response = requests.get(f"{LAUNCHER_URL}/health", timeout=2)
+        response.raise_for_status()
+        return jsonify({"status": "online", "launcher": response.json()})
+    except:
+        return jsonify({"status": "offline", "launcher_url": LAUNCHER_URL})
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5050))
