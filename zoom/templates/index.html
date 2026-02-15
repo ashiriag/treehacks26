@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Zoom + Character Drawing MVP</title>
+    
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;700&family=Montserrat:wght@700&display=swap" rel="stylesheet">
+
+    <style>
+        /* Reset and body styles */
+        body {
+            margin: 0;
+            font-family: 'Roboto', sans-serif;
+            background: linear-gradient(135deg, #f6d365, #fda085);
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-start;
+            align-items: center;
+            min-height: 100vh;
+            color: #333;
+        }
+
+        h1 {
+            font-family: 'Montserrat', sans-serif;
+            font-size: 3rem;
+            margin-top: 2rem;
+            text-shadow: 2px 2px #fda08580;
+        }
+
+        h2 {
+            font-size: 1.8rem;
+            margin-top: 1.5rem;
+        }
+
+        form {
+            margin: 1rem 0;
+        }
+
+        button {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: #fff;
+            border: none;
+            padding: 15px 25px;
+            margin: 10px;
+            font-size: 1.2rem;
+            font-weight: bold;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        button:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 10px 15px rgba(0,0,0,0.2);
+        }
+
+        a.join-link {
+            display: inline-block;
+            text-decoration: none;
+            padding: 12px 20px;
+            margin: 15px 0;
+            background: #ff6f61;
+            color: #fff;
+            font-weight: bold;
+            border-radius: 8px;
+            transition: background 0.2s;
+        }
+
+        a.join-link:hover {
+            background: #ff3b2e;
+        }
+
+        .characters {
+            display: flex;
+            justify-content: center;
+            flex-wrap: wrap;
+            margin-top: 1rem;
+        }
+
+        .characters button {
+            font-size: 2.5rem;
+            padding: 20px 30px;
+            margin: 15px;
+            background: #fff5ee;
+            color: #764ba2;
+            border-radius: 15px;
+            box-shadow: 0 5px 10px rgba(0,0,0,0.1);
+            transition: all 0.2s;
+        }
+
+        .characters button:hover {
+            transform: scale(1.1);
+            box-shadow: 0 10px 15px rgba(0,0,0,0.2);
+            background: #f3e5f5;
+        }
+
+        .selected {
+            background: #ffdd57 !important;
+            color: #333 !important;
+            box-shadow: 0 0 20px rgba(255,221,87,0.6);
+        }
+
+        p.selected-text {
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: #333;
+        }
+
+    </style>
+</head>
+<body>
+
+    <h1>Zoom + Character Drawing MVP</h1>
+
+    {% if error %}
+        <p style="color:red; font-weight:bold;">Error: {{ error }}</p>
+    {% endif %}
+
+    {% if not join_url %}
+    <!-- Step 1: Start Meeting -->
+    <form action="/start-meeting" method="post">
+        <button type="submit">Start Meeting</button>
+    </form>
+    {% endif %}
+
+    {% if join_url and not show_chars %}
+    <!-- Step 2: Zoom Join Link -->
+    <p>
+        Click to join your meeting (browser recommended):
+        <br>
+        <a class="join-link" href="{{ join_url }}&browser=1" target="_blank">Join Zoom Meeting</a>
+    </p>
+    <form action="/choose-characters" method="get">
+        <button type="submit">Next → Choose Characters</button>
+    </form>
+    {% endif %}
+
+    {% if show_chars %}
+    <!-- Step 3: Choose Characters -->
+    <h2>Choose a character to practice:</h2>
+    <div class="characters">
+        <form action="/select-character" method="post">
+            {% for char in characters %}
+                <button type="submit" name="character" value="{{ char }}">{{ char }}</button>
+            {% endfor %}
+        </form>
+    </div>
+    {% endif %}
+
+    {% if selected_char %}
+        <p class="selected-text">You selected: <strong>{{ selected_char }}</strong></p>
+        <p>Next: Draw this character!</p>
+    {% endif %}
+
+</body>
+</html>
