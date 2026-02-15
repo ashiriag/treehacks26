@@ -1019,6 +1019,8 @@ class TutorApp:
         cy = (bbox[1] + bbox[3]) // 2
         cv2.line(frame, (cx, bbox[1]), (cx, bbox[3]), (60, 70, 90), 1)
         cv2.line(frame, (bbox[0], cy), (bbox[2], cy), (60, 70, 90), 1)
+        cv2.line(frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (60, 70, 90), 1)
+        cv2.line(frame, (bbox[2], bbox[1]), (bbox[0], bbox[3]), (60, 70, 90), 1)
         cv2.rectangle(frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]),
                       (70, 85, 110), 1)
 

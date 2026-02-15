@@ -250,7 +250,6 @@ class CharacterData:
 
         d_dir = None
         done = False
-        print(self.partial_stroke_progress)
         min_progress = math.floor(self.partial_stroke_progress)
         for _ in range(4):
             pp_int = int(self.partial_stroke_progress)
@@ -364,6 +363,8 @@ CHARACTER_LIST = [
     {"char": "女", "pinyin": "nǚ", "english": "woman"},
     {"char": "子", "pinyin": "zǐ", "english": "child/son"},
     {"char": "王", "pinyin": "wáng", "english": "king"},
+    {"char": "马", "pinyin": "mǎ", "english": "horse"},
+    {"char": "㕡", "pinyin": "jǐng", "english": "neck"},
 ]
 
 # Filter to only characters present in MakeMeAHanzi data
