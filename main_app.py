@@ -20,10 +20,12 @@ import math
 import sys
 import time
 import os
+import math
 import requests
 import threading
 from typing import List, Tuple, Optional
 from PIL import Image, ImageDraw, ImageFont
+from colour import Color
 
 from characters import (
     get_character,
@@ -113,7 +115,7 @@ AUTO_ADVANCE_DELAY = 2.5
 
 # --- Stroke scoring (curve-aware, from test_21) ---
 MAX_DIR_ANGLE_DEG = 35       # Max angle between user and reference direction
-INSTANT_WINDOW = 6           # Trailing points for instantaneous direction
+INSTANT_WINDOW = 3           # Trailing points for instantaneous direction
 MIN_DRAWN_DISP = 30.0        # Min distance in display units before evaluating
 LIVE_CHECK_EVERY_N = 2       # Evaluate direction every N new points
 REF_DENSE_N = 256            # Dense resampling count for reference lookup
@@ -127,10 +129,24 @@ COLOR_CURRENT_MEDIAN = (0, 200, 255)     # Yellow for current stroke guide
 COLOR_ARROW_ANIM = (255, 100, 0)         # Orange for animated stroke arrow
 
 COL_OK = (30, 210, 30)                   # Green segment (correct direction)
-COL_WRONG = (30, 30, 220)               # Red segment (wrong direction)
-COL_NEUTRAL = (140, 140, 140)           # Gray segment (not yet evaluated)
+COL_WRONG = (220, 30, 30)               # Red segment (wrong direction)
+COL_NEUTRAL = (30, 210, 30)             # Neutral segment (not yet evaluated)
 COL_ARROW_EXPECTED = (255, 200, 0)      # Yellow arrow (expected direction)
 COL_ARROW_USER = (255, 255, 255)        # White arrow (user direction)
+
+# --- Angle-to-color gradient (green → yellow → red) ---
+_GRAD_COLORS = list(Color(rgb =[k/255 for k in COL_OK]).range_to(Color(rgb =[k/255 for k in COL_WRONG]), 181))  # 0°..180°
+
+
+def angle_to_bgr(angle_deg: float) -> Tuple[int, int, int]:
+    """Map an angle deviation (0°–180°) to a BGR color on a green→yellow→red gradient."""
+    angle_deg = abs(angle_deg)
+    angle_deg = math.sqrt(angle_deg/180) * 180
+    idx = max(0, min(180, int(round(angle_deg))))
+    c = _GRAD_COLORS[idx]
+    r, g, b = [int(round(x * 255)) for x in c.rgb]
+    return (b, g, r)  # BGR for OpenCV
+
 
 COLOR_TEXT = (100, 255, 100)
 COLOR_TEXT_DIM = (150, 150, 150)
@@ -141,16 +157,24 @@ LINE_THICKNESS = 5
 # --- Menu button layout ---
 MENU_BUTTON_X = 40
 MENU_BUTTON_W = 600
-MENU_BUTTON_H = 90
-MENU_BUTTON_Y_START = 160
-MENU_BUTTON_SPACING = 120
+MENU_BUTTON_H = 80
+MENU_BUTTON_Y_START = 130
+MENU_BUTTON_SPACING = 100
 MENU_LABELS = [
     ("Teaching Mode", "Learn stroke-by-stroke with guides"),
+    ("Free Draw", "Draw with index finger (no pinch)"),
     ("Pinyin Recognition", "See pinyin, recall character"),
     ("English Translation", "See English, recall character"),
     ("Quit", "Exit application"),
 ]
-MENU_ACTIONS = ["teaching", "pinyin", "english", "quit"]
+MENU_ACTIONS = ["teaching", "free_draw", "pinyin", "english", "quit"]
+
+# --- In-game nav buttons (bottom-right) ---
+NAV_BTN_W = 100
+NAV_BTN_H = 45
+NAV_BTN_GAP = 12          # gap between the two buttons
+NAV_BTN_MARGIN_R = 50     # margin from right edge
+NAV_BTN_MARGIN_B = 100    # margin from bottom (above status bar)
 
 
 # ===============================
@@ -371,7 +395,9 @@ class TutorApp:
         self.pinch_active = False          # True while pinching (sticky)
         self.pinch_just_started = False    # True on the single frame pinch begins
         self.hovered_button_idx = -1       # menu button under fingertip (-1 = none)
+        self.hovered_nav_idx = -1          # in-game nav button under fingertip
         self.should_quit = False           # set True to exit main loop
+        self._last_frame_shape = (WINDOW_HEIGHT, WINDOW_WIDTH)
 
         # Drawing state
         self.user_strokes: list = []           # completed: list of (pts_px, seg_colors)
@@ -382,6 +408,7 @@ class TutorApp:
         # Per-point scoring state
         self.pts_display: list = []            # current stroke in display space
         self.seg_colors: list = []             # per-segment BGR color
+        self.seg_angles: list = []             # per-segment angle deviation (degrees)
         self.drawn_len = 0.0                   # arc-length in display units
         self.live_ok: Optional[bool] = None
         self.live_angle: Optional[float] = None
@@ -390,9 +417,12 @@ class TutorApp:
         self.live_counter = 0
         self.tip_xy: Optional[Tuple[int, int]] = None
 
-        # Display
+        # Display / bounding-box calibration
         self.drawing_bbox = (0, 0, WINDOW_WIDTH, WINDOW_HEIGHT)
         self.char_size = min(WINDOW_WIDTH, WINDOW_HEIGHT)
+        self.calibrating = False       # True while waiting for corner pinches
+        self.calib_corners: list = []  # collected corner points [(x,y), ...]
+        self.custom_bbox: Optional[Tuple[int, int, int, int]] = None  # user-set bbox
 
         # Feedback & scoring
         self.feedback: List[str] = []
@@ -418,7 +448,13 @@ class TutorApp:
     # ----------------------------
 
     def _compute_drawing_bbox(self, w: int, h: int):
-        """Centered square bbox for character display (85 % of min dimension)."""
+        """Centered square bbox for character display (85 % of min dimension).
+        Skips auto-computation when a custom bbox has been set via Adjust."""
+        if self.custom_bbox is not None:
+            self.drawing_bbox = self.custom_bbox
+            self.char_size = min(self.custom_bbox[2] - self.custom_bbox[0],
+                                 self.custom_bbox[3] - self.custom_bbox[1])
+            return
         size = int(min(w, h) * 0.85)
         x0 = (w - size) // 2
         y0 = (h - size) // 2
@@ -470,6 +506,7 @@ class TutorApp:
         """Reset per-point scoring state for a new stroke."""
         self.pts_display = []
         self.seg_colors = []
+        self.seg_angles = []
         self.drawn_len = 0.0
         self.live_ok = None
         self.live_angle = None
@@ -494,6 +531,7 @@ class TutorApp:
 
         stroke_px = self.current_user_stroke[:]
         colors = self.seg_colors[:]
+        angles = self.seg_angles[:]
         drawn_len = self.drawn_len          # save before reset
         self.current_user_stroke = []
         self._reset_live_state()
@@ -507,10 +545,10 @@ class TutorApp:
 
         ref = self.ref_strokes[self.current_stroke_idx]
 
-        # --- direction accuracy ---
-        n_ok = sum(1 for c in colors if c == COL_OK)
-        n_bad = sum(1 for c in colors if c == COL_WRONG)
-        n_eval = n_ok + n_bad
+        # --- direction accuracy (from stored angles) ---
+        evaluated = [a for a in angles if a is not None]
+        n_eval = len(evaluated)
+        n_ok = sum(1 for a in evaluated if a <= MAX_DIR_ANGLE_DEG)
         dir_pct = 100.0 * n_ok / n_eval if n_eval > 0 else 0.0
 
         # --- length coverage ---
@@ -519,8 +557,11 @@ class TutorApp:
         accepted = dir_pct >= ACCEPT_PCT and len_pct >= MIN_LENGTH_PCT
 
         if accepted:
-            # Stroke accepted
-            self.user_strokes.append((stroke_px, colors))
+            # Stroke accepted — teaching clears old strokes; others keep them
+            if self.mode == "teaching":
+                self.user_strokes = []
+            else:
+                self.user_strokes.append((stroke_px, colors))
             self.current_stroke_idx += 1
             self.anim_start = time.time()
 
@@ -566,6 +607,7 @@ class TutorApp:
         """Detect hand, compute pinch with hysteresis, delegate to mode handler."""
         frame = cv2.flip(frame, 1)
         h, w, _ = frame.shape
+        self._last_frame_shape = (h, w)
         self._compute_drawing_bbox(w, h)
 
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -583,10 +625,19 @@ class TutorApp:
             hand_lms = result.hand_landmarks[0]
             tip = hand_lms[INDEX_FINGER_TIP]
             thumb = hand_lms[THUMB_TIP]
-            # Pinch location = midpoint of thumb tip and index tip
-            x = int((tip.x + thumb.x) / 2 * w)
-            y = int((tip.y + thumb.y) / 2 * h)
+
+            is_free = (self.mode == "free_draw")
+
+            if is_free:
+                # Free draw: cursor follows index finger tip, always active
+                x = int(tip.x * w)
+                y = int(tip.y * h)
+            else:
+                # Normal: cursor is midpoint of thumb + index
+                x = int((tip.x + thumb.x) / 2 * w)
+                y = int((tip.y + thumb.y) / 2 * h)
             self.tip_xy = (x, y)
+
 
             pinch_dist = np.hypot(tip.x - thumb.x, tip.y - thumb.y)
 
@@ -600,11 +651,24 @@ class TutorApp:
                 self.pinch_just_started = True
                 set_drawing_state(True)  # Send haptic feedback: start drawing
 
+            # In free_draw, drawing is always active (index finger tracks)
+            # but nav buttons still require a pinch to activate.
+            free_draw_active = is_free and not self.character_complete
+
             # Mode-specific input handling
             if self.mode == "mode_select":
                 self._handle_menu_input(x, y)
             else:
-                self._handle_drawing_input(x, y)
+                # Check in-game nav buttons first (pinch required)
+                self._check_nav_hover(x, y)
+                if self.hovered_nav_idx >= 0:
+                    self._handle_nav_pinch()
+                elif self.calibrating:
+                    self._handle_calibration_pinch(x, y)
+                elif free_draw_active:
+                    self._handle_free_draw_input(x, y)
+                else:
+                    self._handle_drawing_input(x, y)
 
             # Draw hand landmarks
             pts = [(int(lm.x * w), int(lm.y * h)) for lm in hand_lms]
@@ -614,13 +678,20 @@ class TutorApp:
                 cv2.circle(frame, (px, py), 3, (0, 0, 255), -1)
         else:
             self.pinch_active = False
+            self.hovered_nav_idx = -1
 
-        # End stroke if pinch released while drawing
-        if not self.pinch_active and self.drawing:
+        # End stroke if pinch released while drawing (normal modes only)
+        if not self.pinch_active and self.drawing and self.mode != "free_draw":
             self.drawing = False
             self.prev_point = None
             self.finish_stroke()
             set_drawing_state(False)  # Send haptic feedback: stop drawing
+
+        # In free_draw, end stroke when hand disappears
+        if self.mode == "free_draw" and not result.hand_landmarks and self.drawing:
+            self.drawing = False
+            self.prev_point = None
+            self.finish_stroke()
 
         return frame
 
@@ -653,6 +724,7 @@ class TutorApp:
                 dx, dy = self._pixel_to_display(x, y)
                 self.pts_display = [(dx, dy)]
                 self.seg_colors = []
+                self.seg_angles = []
                 self.drawn_len = 0.0
                 self.live_ok = None
                 self.live_angle = None
@@ -690,11 +762,12 @@ class TutorApp:
                                 ref=self.ref_strokes[self.current_stroke_idx],
                                 total_drawn=self.drawn_len,
                             )
-                            self.seg_colors.append(
-                                COL_NEUTRAL if ok is None
-                                else (COL_OK if ok else COL_WRONG)
-                            )
-                            if ok is not None:
+                            if ok is None:
+                                self.seg_colors.append(COL_NEUTRAL)
+                                self.seg_angles.append(None)
+                            else:
+                                self.seg_colors.append(angle_to_bgr(ang))
+                                self.seg_angles.append(ang)
                                 self.live_ok = ok
                                 self.live_angle = ang
                             self.live_ref_tan = ref_tan
@@ -704,6 +777,109 @@ class TutorApp:
                                 self.seg_colors[-1]
                                 if self.seg_colors else COL_NEUTRAL
                             )
+                            self.seg_angles.append(
+                                self.seg_angles[-1]
+                                if self.seg_angles else None
+                            )
+
+    def _handle_free_draw_input(self, x: int, y: int):
+        """Handle stroke drawing in free_draw mode — index finger always active."""
+        if not self.drawing:
+            # --- stroke start ---
+            self.drawing = True
+            self.prev_point = (x, y)
+            self.current_user_stroke = [(x, y)]
+            dx, dy = self._pixel_to_display(x, y)
+            self.pts_display = [(dx, dy)]
+            self.seg_colors = []
+            self.seg_angles = []
+            self.drawn_len = 0.0
+            self.live_ok = None
+            self.live_angle = None
+            self.live_ref_tan = None
+            self.live_u_dir = None
+            self.live_counter = 0
+        else:
+            # --- stroke continuation ---
+            if self.prev_point:
+                diff = np.array([x - self.prev_point[0], y - self.prev_point[1]])
+                dist = np.linalg.norm(diff)
+                if dist > MOVE_THRESHOLD:
+                    self.current_user_stroke.append((x, y))
+                    self.prev_point = (x, y)
+
+                    dx, dy = self._pixel_to_display(x, y)
+                    if not self.pts_display:
+                        self.pts_display = [(dx, dy)]
+                        return
+                    stroke_done = self.char_data.update_partial_stroke(self.current_stroke_idx, diff)
+                    if stroke_done:
+                        self.drawing = False
+                        self.prev_point = None
+                        self.current_user_stroke = []
+                        self._reset_live_state()
+                        self.current_stroke_idx += 1
+                        self.anim_start = time.time()
+                        if self.current_stroke_idx >= self.char_data.num_strokes:
+                            self.character_complete = True
+                            self.complete_time = time.time()
+                            self.completed_characters += 1
+                            self.score += 100
+                            self.feedback.append(
+                                f"Character {self.char_info['char']} complete! +100"
+                            )
+                        else:
+                            self.feedback.append(
+                                f"Stroke {self.current_stroke_idx} done!"
+                            )
+                    
+                        
+                        
+                    # # Per-point direction check (throttled)
+                    # self.live_counter += 1
+                    # if (self.live_counter % LIVE_CHECK_EVERY_N == 0
+                    #         and self.current_stroke_idx < len(self.ref_strokes)):
+                    #     ok, ang, t, ref_tan, u_dir = evaluate_point(
+                    #         new_pt=np.array([dx, dy]),
+                    #         history=np.array(self.pts_display,
+                    #                          dtype=np.float32),
+                    #         ref=self.ref_strokes[self.current_stroke_idx],
+                    #         total_drawn=self.drawn_len,
+                    #     )
+                    #     if ok is None:
+                    #         self.seg_colors.append(COL_NEUTRAL)
+                    #         self.seg_angles.append(None)
+                    #     else:
+                    #         self.seg_colors.append(angle_to_bgr(ang))
+                    #         self.seg_angles.append(ang)
+                    #         self.live_ok = ok
+                    #         self.live_angle = ang
+                    #     self.live_ref_tan = ref_tan
+                    #     self.live_u_dir = u_dir
+
+                    #     # --- Auto-finish: check if stroke meets acceptance ---
+                    #     if self.current_stroke_idx < len(self.ref_strokes):
+                    #         ref = self.ref_strokes[self.current_stroke_idx]
+                    #         len_pct = (100.0 * self.drawn_len / ref.arc_length
+                    #                    if ref.arc_length > 0 else 100.0)
+                    #         evaluated = [a for a in self.seg_angles if a is not None]
+                    #         n_eval = len(evaluated)
+                    #         n_ok_seg = sum(1 for a in evaluated if a <= MAX_DIR_ANGLE_DEG)
+                    #         dir_pct = 100.0 * n_ok_seg / n_eval if n_eval > 0 else 0.0
+                    #         if len_pct >= MIN_LENGTH_PCT and dir_pct >= ACCEPT_PCT and n_eval >= 5:
+                    #             # Auto-complete this stroke
+                    #             self.drawing = False
+                    #             self.prev_point = None
+                    #             self.finish_stroke()
+                    # else:
+                    #     self.seg_colors.append(
+                    #         self.seg_colors[-1]
+                    #         if self.seg_colors else COL_NEUTRAL
+                    #     )
+                    #     self.seg_angles.append(
+                    #         self.seg_angles[-1]
+                    #         if self.seg_angles else None
+                    #     )
 
     # ----------------------------
     # Drawing helpers
@@ -763,7 +939,7 @@ class TutorApp:
             tag = "OK" if self.live_ok else "WRONG"
             label = (f"direction: {tag}  {self.live_angle:.1f}deg"
                      f"  (max {MAX_DIR_ANGLE_DEG}deg)")
-            col = COL_OK if self.live_ok else COL_WRONG
+            col = angle_to_bgr(self.live_angle)
         put_text(frame, label, (10, 30), 24, col)
 
     def _draw_animated_arrow(self, frame, median_pts, progress):
@@ -832,6 +1008,163 @@ class TutorApp:
         shortcuts = "C:Clear  N:Next  M:Menu  Q:Quit"
         put_text(frame, shortcuts, (w - 450, 55), 18, COLOR_TEXT_DIM)
 
+    # --- In-game nav buttons (Menu / Quit) ---
+
+    def _nav_btn_rects_from_shape(self, h: int, w: int) -> list:
+        """Return [(x1,y1,x2,y2), ...] for [Adjust, Menu, Quit] buttons."""
+        quit_x2 = w - NAV_BTN_MARGIN_R
+        quit_x1 = quit_x2 - NAV_BTN_W
+        btn_y2 = h - NAV_BTN_MARGIN_B
+        btn_y1 = btn_y2 - NAV_BTN_H
+        menu_x2 = quit_x1 - NAV_BTN_GAP
+        menu_x1 = menu_x2 - NAV_BTN_W
+        adj_x2 = menu_x1 - NAV_BTN_GAP
+        adj_x1 = adj_x2 - NAV_BTN_W
+        return [(adj_x1, btn_y1, adj_x2, btn_y2),
+                (menu_x1, btn_y1, menu_x2, btn_y2),
+                (quit_x1, btn_y1, quit_x2, btn_y2)]
+
+    def _nav_btn_rects(self, frame) -> list:
+        h, w = frame.shape[:2]
+        return self._nav_btn_rects_from_shape(h, w)
+
+    def _draw_nav_buttons(self, frame):
+        """Draw Adjust / Menu / Quit buttons at the bottom-right of the frame."""
+        rects = self._nav_btn_rects(frame)
+        labels = ["Adjust", "Menu", "Quit"]
+        for i, ((x1, y1, x2, y2), label) in enumerate(zip(rects, labels)):
+            hovered = (self.hovered_nav_idx == i)
+            # Highlight Adjust button differently when calibrating
+            if i == 0 and self.calibrating:
+                bg = (60, 40, 100) if not hovered else (100, 60, 140)
+                border = (200, 120, 255)
+            elif hovered:
+                bg = (80, 80, 80)
+                border = COLOR_TEXT_TITLE
+            else:
+                bg = (30, 30, 30)
+                border = (70, 70, 70)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), bg, -1)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), border, 2 if hovered or (i == 0 and self.calibrating) else 1)
+            text_col = (255, 255, 255) if hovered else COLOR_TEXT_DIM
+            tx = x1 + (NAV_BTN_W - len(label) * 10) // 2
+            ty = (y1 + y2) // 2 + 6
+            put_text(frame, label, (tx, ty), 22, text_col)
+
+        # Cursor feedback when hovering a nav button
+        if self.hovered_nav_idx >= 0 and self.tip_xy is not None:
+            cx, cy = self.tip_xy
+            col = (0, 255, 0) if self.pinch_active else (255, 255, 255)
+            cv2.circle(frame, (cx, cy), 15, col, 2)
+            if self.pinch_active:
+                cv2.circle(frame, (cx, cy), 8, col, -1)
+
+    def _check_nav_hover(self, x: int, y: int):
+        """Update hovered_nav_idx based on cursor position (call every frame)."""
+        h, w = self._last_frame_shape
+        rects = self._nav_btn_rects_from_shape(h, w)
+        self.hovered_nav_idx = -1
+        for i, (x1, y1, x2, y2) in enumerate(rects):
+            if x1 <= x <= x2 and y1 <= y <= y2:
+                self.hovered_nav_idx = i
+                break
+
+    def _handle_nav_pinch(self):
+        """If pinch just started on a nav button, execute its action."""
+        if not self.pinch_just_started:
+            return
+        if self.hovered_nav_idx == 0:
+            # Adjust — enter calibration mode
+            self.calibrating = True
+            self.calib_corners = []
+            self.drawing = False
+            self.current_user_stroke = []
+            self._reset_live_state()
+            self.feedback.append("Pinch top-left corner of drawing area...")
+        elif self.hovered_nav_idx == 1:
+            # Menu
+            self.calibrating = False
+            self.mode = "mode_select"
+            self.drawing = False
+            self.current_user_stroke = []
+            self._reset_live_state()
+        elif self.hovered_nav_idx == 2:
+            # Quit
+            self.should_quit = True
+
+    def _handle_calibration_pinch(self, x: int, y: int):
+        """Collect corner points during bounding-box calibration."""
+        if not self.pinch_just_started:
+            return
+        self.calib_corners.append((x, y))
+        if len(self.calib_corners) == 1:
+            self.feedback.append(
+                f"Corner 1 set at ({x}, {y}). Now pinch bottom-right corner..."
+            )
+        elif len(self.calib_corners) >= 2:
+            # Build custom bbox from the two corners, forced to a square
+            (x0, y0), (x1, y1) = self.calib_corners[0], self.calib_corners[1]
+            bx0 = min(x0, x1)
+            by0 = min(y0, y1)
+            bx1 = max(x0, x1)
+            by1 = max(y0, y1)
+            side = min(bx1 - bx0, by1 - by0)
+            # Ensure minimum size
+            if side < 50:
+                self.feedback.append("Box too small — try again.")
+                self.calib_corners = []
+                return
+            # Square from top-left corner using the shorter side
+            bx1 = bx0 + side
+            by1 = by0 + side
+            self.custom_bbox = (bx0, by0, bx1, by1)
+            self.drawing_bbox = self.custom_bbox
+            self.char_size = side
+            self.calibrating = False
+            self.calib_corners = []
+            # Rebuild ref strokes since the bbox changed
+            self._build_ref_strokes()
+            self.user_strokes = []
+            self.current_user_stroke = []
+            self._reset_live_state()
+            self.feedback.append(
+                f"Drawing area set! ({bx0},{by0}) to ({bx1},{by1})"
+            )
+
+    def _draw_calibration_overlay(self, frame):
+        """Draw calibration instructions, corner markers, and preview box."""
+        if not self.calibrating:
+            return
+        h, w = frame.shape[:2]
+        # Semi-transparent instruction banner
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (0, 60), (w, 120), (0, 0, 0), -1)
+        cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
+        n = len(self.calib_corners)
+        if n == 0:
+            msg = "CALIBRATE: Pinch at the TOP-LEFT corner of your drawing area"
+        else:
+            msg = "CALIBRATE: Now pinch at the BOTTOM-RIGHT corner"
+        put_text(frame, msg, (20, 100), 26, (200, 120, 255))
+
+        # Draw placed corners
+        for i, (cx, cy) in enumerate(self.calib_corners):
+            cv2.circle(frame, (cx, cy), 10, (255, 0, 255), -1)
+            cv2.circle(frame, (cx, cy), 14, (255, 0, 255), 2)
+            put_text(frame, f"C{i+1}", (cx + 16, cy - 4), 20, (255, 0, 255))
+
+        # If one corner placed, draw crosshairs at it
+        if n >= 1:
+            cx, cy = self.calib_corners[0]
+            cv2.line(frame, (cx - 20, cy), (cx + 20, cy), (255, 0, 255), 1)
+            cv2.line(frame, (cx, cy - 20), (cx, cy + 20), (255, 0, 255), 1)
+
+        # If cursor visible, show preview rectangle from first corner to cursor
+        if n == 1 and self.tip_xy is not None:
+            cx, cy = self.calib_corners[0]
+            tx, ty = self.tip_xy
+            cv2.rectangle(frame, (cx, cy), (tx, ty), (255, 255, 0), 2)
+
     # ----------------------------
     # Mode renderers
     # ----------------------------
@@ -884,6 +1217,69 @@ class TutorApp:
 
         self._draw_status_bar(display, status)
         self._draw_shortcuts(display)
+        self._draw_nav_buttons(display)
+        self._draw_calibration_overlay(display)
+        return display
+
+    def render_free_draw_mode(self, frame: np.ndarray) -> np.ndarray:
+        """Free draw mode: index finger always active, shows outline, auto-advances."""
+        display = frame.copy()
+        if not self.char_data:
+            self.select_new_character()
+
+        bbox = self.drawing_bbox
+        cd = self.char_data
+
+        # Background guides — full outline always visible
+        self._draw_drawing_box(display)
+        cd.draw_union(display, bbox, color=COLOR_GUIDE_OUTLINE, thickness=2)
+
+        # Completed strokes (filled green)
+        for i in range(self.current_stroke_idx):
+            cd.draw_stroke(display, i, bbox, filled=True, color=COLOR_COMPLETED)
+        
+        cd.draw_partial_stroke(display, bbox)
+
+        # # Current stroke median (yellow) + animated arrow
+        # if not self.character_complete and self.current_stroke_idx < cd.num_strokes:
+        #     cd.draw_stroke_midline(
+        #         display, self.current_stroke_idx, bbox,
+        #         color=COLOR_CURRENT_MEDIAN, thickness=3
+        #     )
+        #     median_px = cd.get_stroke_midline(self.current_stroke_idx, bbox)
+        #     if len(median_px) > 0:
+        #         progress = ((time.time() - self.anim_start) % 2.0) / 2.0
+        #         self._draw_animated_arrow(display, median_px, progress)
+
+        # User strokes (coloured per-segment)
+        self._draw_user_strokes(display)
+
+        # Direction arrows + live feedback
+        self._draw_direction_arrows(display)
+        self._draw_live_feedback(display)
+
+        # Title
+        title = (
+            f"Free Draw: {self.char_info['char']}  "
+            f"({self.char_info['pinyin']}) - {self.char_info['english']}"
+        )
+        put_text(display, title, (20, 55), 32, COLOR_TEXT)
+
+        # # Fingertip cursor
+        # if self.tip_xy is not None:
+        #     cx, cy = self.tip_xy
+        #     cv2.circle(display, (cx, cy), 8, (0, 255, 255), -1)
+        #     cv2.circle(display, (cx, cy), 12, (0, 255, 255), 2)
+
+        if self.character_complete:
+            status = "Character complete! (auto-advancing...)"
+        else:
+            status = f"Stroke {self.current_stroke_idx + 1} / {cd.num_strokes}"
+
+        self._draw_status_bar(display, status)
+        self._draw_shortcuts(display)
+        self._draw_nav_buttons(display)
+        self._draw_calibration_overlay(display)
         return display
 
     def render_recall_mode(self, frame: np.ndarray) -> np.ndarray:
@@ -926,6 +1322,8 @@ class TutorApp:
 
         self._draw_status_bar(display, status)
         self._draw_shortcuts(display)
+        self._draw_nav_buttons(display)
+        self._draw_calibration_overlay(display)
         return display
 
     def render_mode_select(self, frame: np.ndarray) -> np.ndarray:
@@ -940,7 +1338,7 @@ class TutorApp:
                  (w // 2 - 300, 80), 60, (255, 200, 100))
 
         # Interactive buttons
-        keys = ["1", "2", "3", "Q"]
+        keys = ["1", "2", "3", "4", "Q"]
         for i, ((title, desc), key) in enumerate(zip(MENU_LABELS, keys)):
             by = MENU_BUTTON_Y_START + i * MENU_BUTTON_SPACING
             bx = MENU_BUTTON_X
@@ -969,8 +1367,8 @@ class TutorApp:
             if self.pinch_active:
                 cv2.circle(display, (cx, cy), 8, col, -1)
 
-        put_text(display, "Pinch a button or press 1/2/3/Q",
-                 (w // 2 - 260, h - 60), 28, COLOR_TEXT)
+        put_text(display, "Pinch a button or press 1/2/3/4/Q",
+                 (w // 2 - 280, h - 60), 28, COLOR_TEXT)
         return display
 
     # ----------------------------
@@ -983,9 +1381,12 @@ class TutorApp:
                 self.mode = "teaching"
                 self.select_new_character()
             elif key == ord('2'):
-                self.mode = "pinyin"
+                self.mode = "free_draw"
                 self.select_new_character()
             elif key == ord('3'):
+                self.mode = "pinyin"
+                self.select_new_character()
+            elif key == ord('4'):
                 self.mode = "english"
                 self.select_new_character()
             elif key == ord('q'):
@@ -1037,6 +1438,8 @@ class TutorApp:
                 display = self.render_mode_select(frame)
             elif self.mode == "teaching":
                 display = self.render_teaching_mode(frame)
+            elif self.mode == "free_draw":
+                display = self.render_free_draw_mode(frame)
             elif self.mode in ("pinyin", "english"):
                 display = self.render_recall_mode(frame)
             else:

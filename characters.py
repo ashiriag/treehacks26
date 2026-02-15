@@ -13,7 +13,8 @@ import os
 import sys
 import random
 import shapely.geometry as sg
-from shapely.ops import unary_union
+from shapely.ops import unary_union, split
+from shapely.geometry import LineString
 import numpy as np
 from svg.path import parse_path
 from xml.dom import minidom
@@ -69,6 +70,18 @@ def makemeahanzi_to_display(pts):
     out[:, 1] = 900.0 - pts[:, 1]
     return out
 
+def normalize_makemeahanzi(pts):
+    #normalize makemeahanzi coordinates to 0-1 floating
+    return makemeahanzi_to_display(pts).astype(np.float32)/1024
+
+def resize_to_box(pts, bbox_px):
+    pts = np.asarray(pts, dtype=np.float32)
+    if len(pts) == 0:
+        return pts
+    out = pts.copy()
+    out[:, 0] = pts[:, 0] * (bbox_px[2] - bbox_px[0]) + bbox_px[0]
+    out[:, 1] = pts[:, 1] * (bbox_px[3] - bbox_px[1]) + bbox_px[1]
+    return out
 
 def makemeahanzi_to_box_px(pts, bbox_px):
     """
@@ -146,21 +159,26 @@ class CharacterData:
         self.char = char
         self.obj = DATA[char]
         self.stroke_svgs = character_to_stroke_svgs(char, self.obj)
+        self.stroke_medians = [normalize_makemeahanzi(np.array(s)) for s in self.obj.get("medians", [])]
         self.stroke_polygons = []
         self.num_strokes = len(self.stroke_svgs)
         for i, stroke_svg in enumerate(self.stroke_svgs):
             doc = minidom.parseString(stroke_svg)
             pts = np.array(points_from_doc(doc, density=0.5, scale=1, offset=(0, 0)))
+            pts = normalize_makemeahanzi(pts)
             self.stroke_polygons.append(sg.Polygon(pts))
+        
+
         self.union = unary_union(self.stroke_polygons)
+        self.partial_stroke_polygon = None
+        self.partial_stroke_progress = 0
 
     def get_stroke_midline(self, stroke_idx: int, bbox_px):
         """Get median points for a stroke, transformed to pixel coords."""
-        medians = self.obj.get("medians", [])
-        if stroke_idx < 0 or stroke_idx >= len(medians):
+        if stroke_idx < 0 or stroke_idx >= len(self.stroke_medians):
             return np.array([])
-        pts = np.array(medians[stroke_idx])
-        pts = makemeahanzi_to_box_px(pts, bbox_px)
+        pts = np.array(self.stroke_medians[stroke_idx])
+        pts = resize_to_box(pts, bbox_px)
         return pts
 
     def draw_stroke(self, frame, stroke_idx: int, bbox_px, filled=False, color=(0, 0, 255)):
@@ -168,7 +186,7 @@ class CharacterData:
         if stroke_idx >= self.num_strokes or stroke_idx < 0:
             return
         pts = self.stroke_polygons[stroke_idx].exterior.coords
-        pts = makemeahanzi_to_box_px(pts, bbox_px).astype(np.int32)
+        pts = resize_to_box(pts, bbox_px).astype(np.int32)
         if filled:
             cv2.fillPoly(frame, [pts], color)
         else:
@@ -176,10 +194,9 @@ class CharacterData:
 
     def draw_stroke_midline(self, frame, stroke_idx: int, bbox_px, color=(0, 0, 255), thickness=2):
         """Draw the median line of a stroke."""
-        medians = self.obj.get("medians", [])
-        if stroke_idx < 0 or stroke_idx >= len(medians):
+        if stroke_idx < 0 or stroke_idx >= len(self.stroke_medians):
             return
-        pts = self.get_stroke_midline(stroke_idx, bbox_px).astype(np.int32)
+        pts = resize_to_box(self.get_stroke_midline(stroke_idx, bbox_px), bbox_px).astype(np.int32)
         cv2.polylines(frame, [pts], isClosed=False, color=color, thickness=thickness)
 
     def draw_union(self, frame, bbox_px, color=(0, 0, 255), thickness=2):
@@ -187,11 +204,11 @@ class CharacterData:
         if isinstance(self.union, sg.MultiPolygon):
             for polygon in self.union.geoms:
                 pts = polygon.exterior.coords
-                pts = makemeahanzi_to_box_px(pts, bbox_px).astype(np.int32)
+                pts = resize_to_box(pts, bbox_px).astype(np.int32)
                 cv2.polylines(frame, [pts], isClosed=True, color=color, thickness=thickness)
         else:
             pts = self.union.exterior.coords
-            pts = makemeahanzi_to_box_px(pts, bbox_px).astype(np.int32)
+            pts = resize_to_box(pts, bbox_px).astype(np.int32)
             cv2.polylines(frame, [pts], isClosed=True, color=color, thickness=thickness)
 
     def draw_full_character(self, frame, bbox_px, current_stroke_idx: int = -1):
@@ -202,6 +219,62 @@ class CharacterData:
         if current_stroke_idx > 0:
             for i in range(min(current_stroke_idx, self.num_strokes)):
                 self.draw_stroke(frame, i, bbox_px, filled=True)
+    
+
+    def update_partial_stroke(self, current_stroke_idx, movement):
+        """Update the partial stroke of the character."""
+        if current_stroke_idx < 0:
+            return
+        move_dir = movement / np.linalg.norm(movement)
+        current_medians = self.stroke_medians[current_stroke_idx] 
+        d_dir = current_medians[1] - current_medians[0]
+        done = False
+        for i in range(10):
+            pp_int = int(self.partial_stroke_progress)
+            if pp_int + 1 >= len(current_medians):
+                done = True
+                break
+            #print(current_medians)
+            print(self.partial_stroke_progress/len(current_medians))
+            d_next = current_medians[pp_int + 1] - current_medians[pp_int]
+            d_len = np.linalg.norm(d_next)
+            d_dir = d_next / d_len
+            prog = np.dot(d_dir, move_dir)
+            if prog > 0.0:
+                self.partial_stroke_progress +=  prog/d_len /150
+            else:
+                break
+        if d_dir is not None:
+            cur_pos = current_medians[int(self.partial_stroke_progress)]
+            perpendicular_dir = np.array([-d_dir[1], d_dir[0]])
+            line_length = 10
+            splitting_line = LineString([cur_pos - perpendicular_dir * line_length, cur_pos + perpendicular_dir * line_length])
+            polygons = split(self.stroke_polygons[current_stroke_idx], splitting_line)
+            if len(polygons.geoms) > 1:
+                for polygon in polygons.geoms:
+                    if sg.Point(current_medians[0]).within(polygon):
+                        self.partial_stroke_polygon = polygon
+                        break
+            else:
+                self.partial_stroke_polygon = None
+        if done:
+            self.partial_stroke_progress = 0
+            self.partial_stroke_polygon = None
+        return done
+
+        
+        
+
+    def draw_partial_stroke(self, frame, bbox_px, color = (0, 0, 255), filled = True):
+        """Draw a partial stroke of the character."""
+        if self.partial_stroke_polygon is not None:
+            pts = self.partial_stroke_polygon.exterior.coords
+            pts = resize_to_box(pts, bbox_px).astype(np.int32)
+            if filled:
+                cv2.fillPoly(frame, [pts], color)
+            else:
+                cv2.polylines(frame, [pts], isClosed=True, color=color, thickness=2)
+
 
 
 def get_character(char: str) -> "CharacterData":
