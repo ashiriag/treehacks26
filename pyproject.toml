@@ -13,4 +13,6 @@ dependencies = [
     "requests>=2.32.5",
     "pillow>=12.1.1",
     "colour>=0.1.5",
+    "flask-socketio>=5.6.0",
+    "flask-cors>=6.0.2",
 ]
