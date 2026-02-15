@@ -59,7 +59,7 @@ MOVE_THRESHOLD_PX      = 5
 LINE_THICKNESS         = 5
 
 TARGET_CHAR    = "七"
-HANZI_DATA_DIR = "../makemeahanzi"
+HANZI_DATA_DIR = "makemeahanzi"
 
 # Angle tolerance in degrees — the only threshold, applies to every stroke.
 MAX_DIR_ANGLE_DEG = 35
