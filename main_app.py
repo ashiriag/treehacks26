@@ -21,6 +21,7 @@ import sys
 import time
 import os
 import requests
+import threading
 from typing import List, Tuple, Optional
 from PIL import Image, ImageDraw, ImageFont
 
@@ -87,16 +88,18 @@ ESP_IP = "172.20.10.12"  # ESP8266 haptic feedback device IP
 WIFI_ENABLED = True  # Toggle WiFi feedback on/off
 
 def set_drawing_state(state: bool):
-    """Send drawing state to haptic feedback device via WiFi."""
+    """Send drawing state to haptic feedback device via WiFi (non-blocking)."""
     if not WIFI_ENABLED:
         return
-    
-    url = f"http://{ESP_IP}/drawing"
-    try:
-        requests.post(url, json={"drawing": state}, timeout=2)
-    except Exception as e:
-        # Silently fail to not disrupt user experience
-        pass
+
+    def _post():
+        url = f"http://{ESP_IP}/drawing"
+        try:
+            requests.post(url, json={"drawing": state}, timeout=2)
+        except Exception:
+            pass
+
+    threading.Thread(target=_post, daemon=True).start()
 
 # ===============================
 # Constants
