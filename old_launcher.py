@@ -1202,7 +1202,7 @@ class TutorApp:
             cd.draw_stroke(display, i, bbox, filled=True, color=COLOR_COMPLETED)
         cd.draw_partial_stroke(display, bbox)
 
-        self._draw_user_strokes(display)
+        #self._draw_user_strokes(display)
         self._draw_direction_arrows(display)
         self._draw_live_feedback(display)
 

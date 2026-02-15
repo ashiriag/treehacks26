@@ -262,13 +262,13 @@ class CharacterData:
                 self.partial_stroke_progress = float(pp_int + 1)
                 continue
             d_dir = d_next / d_len
-            prog = np.dot(d_dir, movement)
-            self.partial_stroke_progress += prog / d_len / 2000
+            prog = np.dot(d_dir, movement) - 0.2 * move_norm
+            self.partial_stroke_progress += prog / d_len / 1300
             if prog < 0:
                 break
 
         # Clamp progress
-        self.partial_stroke_progress = max(self.partial_stroke_progress, min_progress)
+        self.partial_stroke_progress = max(self.partial_stroke_progress, 0)
 
         if d_dir is not None:
             # Interpolate position between median[pp_int] and median[pp_int+1]
