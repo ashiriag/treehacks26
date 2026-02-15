@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.11"
 
 [[package]]
@@ -668,6 +668,15 @@ wheels = [
 ]
 
 [[package]]
+name = "svg-path"
+version = "7.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/66/b9/649abbe870842c185b12920e937e9b95d4c2b18de50af98d2c140df3e179/svg_path-7.0.tar.gz", hash = "sha256:9037486957cb1dcf4375ef42206499a47c111b8ffcbac6e3e55f9d079d875bb0", size = 23552, upload-time = "2025-07-06T15:20:40.823Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3a/83/4f5b250220e1a5acd31345a5ec1c95a7769725d0d8135276f399f44062f8/svg_path-7.0-py2.py3-none-any.whl", hash = "sha256:447cb1e16a95acea2dd867fe737fa99cb75d587b4fc64dbee709a8dd6891ad9c", size = 18208, upload-time = "2025-07-06T15:20:39.59Z" },
+]
+
+[[package]]
 name = "treehacks26"
 version = "0.1.0"
 source = { virtual = "." }
@@ -675,6 +684,7 @@ dependencies = [
     { name = "mediapipe" },
     { name = "numpy" },
     { name = "opencv-python" },
+    { name = "svg-path" },
 ]
 
 [package.metadata]
@@ -682,4 +692,5 @@ requires-dist = [
     { name = "mediapipe", specifier = ">=0.10.32" },
     { name = "numpy", specifier = ">=2.4.2" },
     { name = "opencv-python", specifier = ">=4.13.0.92" },
+    { name = "svg-path", specifier = ">=7.0" },
 ]

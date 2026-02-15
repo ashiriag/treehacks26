@@ -3,6 +3,7 @@ finger_stroke_tutor.py
 
 Webcam + MediaPipe Hands (Tasks API) fingertip drawing, stroke segmentation,
 and per-stroke feedback (order + direction + shape) against MakeMeAHanzi medians.
+Uses same MakeMeAHanzi→display transform as draw_svg (scale(1,-1) translate(0,-900)).
 
 Controls:
   - ESC : quit
@@ -33,7 +34,10 @@ import sys
 import os
 import json
 import math
+import time
 import urllib.request
+
+from draw_svg import makemeahanzi_to_box_px, draw_character
 
 # -------------------------------
 # Config
@@ -59,7 +63,7 @@ DIRECTION_TOL_DEG = 35.0
 DTW_THRESH = 35.0           # tune: lower = stricter, higher = more forgiving
 
 # UI toggles
-SHOW_GHOST = True           # toggle with 'g'
+SHOW_GHOST = True           # toggle with 'g' – show/hide arrow guide on current stroke
 
 # Hand connections for drawing
 HAND_CONNECTIONS = [
@@ -70,6 +74,36 @@ HAND_CONNECTIONS = [
     (0, 17), (17, 18), (18, 19), (19, 20), # Pinky
     (5, 9), (9, 13), (13, 17)              # Palm
 ]
+
+# -------------------------------
+# Utilities: SVG path parsing (graphics.txt strokes) via svg.path
+# -------------------------------
+from svg.path import parse_path
+
+
+def svg_path_to_polyline(path_d, n_samples=64):
+    """
+    Parse SVG path string and return list of (x,y) points for drawing.
+    Uses svg.path parse_path; coordinates are in ~1024 space like medians.
+    """
+    path = parse_path(path_d)
+    pts = []
+    for i in range(n_samples + 1):
+        t = i / n_samples
+        p = path.point(t)
+        pts.append((p.real, p.imag))
+    return pts
+
+
+def svg_strokes_to_polylines(hanzi_data):
+    """
+    Convert hanzi 'strokes' (SVG path strings) to list of polylines for display.
+    Each polyline is list of (x,y) in MakeMeAHanzi space; use makemeahanzi_to_display
+    when mapping to screen (as in draw_svg).
+    """
+    strokes = hanzi_data.get("strokes", [])
+    return [svg_path_to_polyline(s) for s in strokes]
+
 
 # -------------------------------
 # Utilities: template loading
@@ -261,6 +295,128 @@ def draw_ghost_stroke(frame, median_1024, bbox_px, color=(255, 255, 255)):
     cv2.circle(frame, tuple(pts_px[-1]), 5, (0, 165, 255), -1)  # end
 
 
+def _strokes_to_panel_px(strokes_points, bbox_px):
+    """
+    Convert stroke polylines (MakeMeAHanzi SVG coords) to pixel coords inside bbox.
+    Uses same transform as draw_svg: scale(1,-1) translate(0,-900) -> (x, 900-y).
+    Returns (all_pts_per_stroke, scale, offset) for consistent mapping.
+    """
+    x0, y0, x1, y1 = bbox_px
+    pw = max(1, x1 - x0)
+    ph = max(1, y1 - y0)
+
+    all_pts = []
+    for stroke in strokes_points:
+        pts = np.asarray(stroke, dtype=np.float32)
+        if len(pts) > 0:
+            pts_display = makemeahanzi_to_box_px(pts, bbox_px)
+            all_pts.extend(pts_display.tolist())
+
+    if not all_pts:
+        return [], 1.0, (x0, y0)
+
+    all_arr = np.asarray(all_pts, dtype=np.float32)
+    mn = all_arr.min(axis=0)
+    mx = all_arr.max(axis=0)
+    size = mx - mn
+    size[size < 1e-6] = 1.0
+    s = float(max(size[0], size[1]))
+    scale = min(pw, ph) / s
+    ox = x0 + (pw - min(pw, ph)) // 2
+    oy = y0 + (ph - min(pw, ph)) // 2
+
+    out = []
+    for stroke in strokes_points:
+        pts = np.asarray(stroke, dtype=np.float32)
+        if len(pts) < 2:
+            out.append([])
+            continue
+        pts = makemeahanzi_to_box_px(pts, bbox_px)
+        pts01 = (pts - mn) / s
+        pts_px = np.stack([
+            ox + pts01[:, 0] * scale,
+            oy + pts01[:, 1] * scale
+        ], axis=1).astype(np.int32)
+        out.append([tuple(p) for p in pts_px])
+    return out, scale, (ox, oy)
+
+
+def draw_full_character(frame, template_strokes, completed_strokes, current_stroke_idx, bbox_px):
+    """
+    Draw full character: all strokes visible (using SVG data).
+    - Completed strokes: filled (thick green)
+    - Incomplete strokes: hollow (thin outline)
+    - current_stroke_idx: highlighted with hollow + arrow
+    template_strokes: list of polylines (from SVG paths) for display
+    """
+    strokes_px = _strokes_to_panel_px(template_strokes, bbox_px)[0]
+    if not strokes_px:
+        return
+
+    for i, pts in enumerate(strokes_px):
+        if len(pts) < 2:
+            continue
+        if i in completed_strokes:
+            # Filled: thick solid line
+            for j in range(len(pts) - 1):
+                cv2.line(frame, pts[j], pts[j + 1], (0, 200, 100), 5)
+        else:
+            # Hollow: thin outline
+            color = (100, 255, 100) if i == current_stroke_idx else (180, 180, 180)
+            for j in range(len(pts) - 1):
+                cv2.line(frame, pts[j], pts[j + 1], color, 1)
+
+
+def draw_animated_arrow_on_stroke(frame, stroke_points, bbox_px, progress, color=(255, 150, 0)):
+    """
+    Draw animated arrow along stroke showing direction.
+    stroke_points: polyline (median or simplified) for arrow path.
+    progress: 0..1, animates along stroke (use time for loop).
+    """
+    strokes_px = _strokes_to_panel_px([stroke_points], bbox_px)[0]
+    if not strokes_px or len(strokes_px[0]) < 2:
+        return
+
+    pts = strokes_px[0]
+    pts_arr = [np.array(p, dtype=np.float32) for p in pts]
+
+    total_len = sum(np.linalg.norm(pts_arr[i + 1] - pts_arr[i]) for i in range(len(pts_arr) - 1))
+    if total_len < 1e-6:
+        return
+    target_len = total_len * (progress % 1.0)
+
+    cumulative = 0.0
+    arrow_start = None
+    arrow_end = None
+
+    for i in range(len(pts_arr) - 1):
+        seg_len = np.linalg.norm(pts_arr[i + 1] - pts_arr[i])
+        if cumulative + seg_len >= target_len:
+            alpha = (target_len - cumulative) / seg_len if seg_len > 0 else 0
+            arrow_start = pts_arr[i] + alpha * (pts_arr[i + 1] - pts_arr[i])
+
+            look_ahead = 25
+            direction = (pts_arr[i + 1] - pts_arr[i]) / (seg_len + 1e-6)
+            arrow_end = arrow_start + look_ahead * direction
+            break
+        cumulative += seg_len
+
+    if arrow_start is not None and arrow_end is not None:
+        start_pt = tuple(map(int, arrow_start))
+        end_pt = tuple(map(int, arrow_end))
+        cv2.line(frame, start_pt, end_pt, color, 3)
+
+        # Arrowhead
+        direction = arrow_end - arrow_start
+        direction = direction / (np.linalg.norm(direction) + 1e-6)
+        angle = np.arctan2(direction[1], direction[0])
+        arrow_size = 12
+        pt1 = end_pt - arrow_size * np.array([np.cos(angle - np.pi / 6), np.sin(angle - np.pi / 6)])
+        pt2 = end_pt - arrow_size * np.array([np.cos(angle + np.pi / 6), np.sin(angle + np.pi / 6)])
+        cv2.line(frame, end_pt, tuple(map(int, pt1)), color, 3)
+        cv2.line(frame, end_pt, tuple(map(int, pt2)), color, 3)
+
+
 # ----------------------------
 # MVP: semantic stroke grading
 # ----------------------------
@@ -416,7 +572,7 @@ def semantic_grade_stroke(user_stroke_px, template_median_1024, all_user_points_
 # -------------------------------
 # Download hand_landmarker model if needed
 # -------------------------------
-MODELS_DIR = os.path.join(os.path.dirname(__file__), "models")
+MODELS_DIR = os.path.join(os.path.dirname(__file__), "..", "models")
 os.makedirs(MODELS_DIR, exist_ok=True)
 MODEL_PATH = os.path.join(MODELS_DIR, "hand_landmarker.task")
 if not os.path.exists(MODEL_PATH):
@@ -445,7 +601,8 @@ except Exception as e:
     print("Set DATA_DIR to your MakeMeAHanzi graphics folder and ensure the JSON exists.")
     sys.exit(1)
 
-print(f"Loaded template for '{TARGET_CHAR}' with {len(template_medians)} strokes.")
+template_svg_polylines = svg_strokes_to_polylines(hanzi)
+print(f"Loaded template for '{TARGET_CHAR}' with {len(template_medians)} strokes (SVG for display).")
 
 # -------------------------------
 # MediaPipe Hand Setup (Tasks API)
@@ -477,9 +634,11 @@ canvas = None
 strokes = []
 drawing = False
 prev_point = None
+completed_strokes = set()  # indices of correctly-drawn strokes (fill in character)
 
 last_feedback = ""   # one-line feedback
 last_info = None     # dict with dtw/dir errors
+arrow_start_time = time.time()  # for arrow animation
 
 # -------------------------------
 # Main loop
@@ -567,6 +726,7 @@ with vision.HandLandmarker.create_from_options(options) as hand_landmarker:
                 )
                 last_info = info
                 if ok:
+                    completed_strokes.add(idx)
                     last_feedback = f"Stroke {idx+1}: OK ✅"
                 else:
                     reason = info.get("reason", "wrong")
@@ -587,18 +747,18 @@ with vision.HandLandmarker.create_from_options(options) as hand_landmarker:
                     last_feedback = f"Stroke {idx+1}: too short (try drawing longer)"
                 last_info = None
 
-        # ---------------- UI: ghost of expected stroke ----------------
-        expected_idx = len(strokes) if not drawing else len(strokes) - 1
-        expected_idx = max(0, expected_idx)
-
-        # draw ghost in top-right panel
-        if SHOW_GHOST and expected_idx < len(template_medians):
-            panel = (w - 220, 10, w - 10, 220)
-            cv2.rectangle(frame, (panel[0], panel[1]), (panel[2], panel[3]), (255, 255, 255), 2)
-            cv2.putText(frame, f"Expected {expected_idx+1}/{len(template_medians)}",
-                        (panel[0] + 6, panel[1] + 22),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
-            draw_ghost_stroke(frame, template_medians[expected_idx], (panel[0] + 10, panel[1] + 30, panel[2] - 10, panel[3] - 10))
+        # ---------------- UI: full character with hollow/filled strokes + arrow ----------------
+        current_stroke_idx = len(completed_strokes)
+        panel = (w - 280, 10, w - 10, 280)
+        cv2.rectangle(frame, (panel[0], panel[1]), (panel[2], panel[3]), (255, 255, 255), 2)
+        cv2.putText(frame, f"'{TARGET_CHAR}'  Stroke {current_stroke_idx+1}/{len(template_medians)}",
+                    (panel[0] + 6, panel[1] + 22),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2, cv2.LINE_AA)
+        inner = (panel[0] + 10, panel[1] + 35, panel[2] - 10, panel[3] - 10)
+        draw_character(frame, TARGET_CHAR, hanzi, inner)
+        if SHOW_GHOST and current_stroke_idx < len(template_medians):
+            arrow_progress = (time.time() - arrow_start_time) / 2.0  # 2 sec loop
+            draw_animated_arrow_on_stroke(frame, template_svg_polylines[current_stroke_idx], inner, arrow_progress)
 
         # status text
         mode = []
@@ -637,6 +797,7 @@ with vision.HandLandmarker.create_from_options(options) as hand_landmarker:
             strokes = []
             drawing = False
             prev_point = None
+            completed_strokes = set()
             last_feedback = "Cleared."
             last_info = None
             print("Canvas cleared")
