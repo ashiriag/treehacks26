@@ -1,0 +1,291 @@
+"""
+Character data module for Chinese Character Tutor.
+
+Loads MakeMeAHanzi graphics.txt and provides:
+- CharacterData class for rendering strokes/outlines
+- Curated CHARACTER_LIST with pinyin/english metadata
+- Median-based stroke data for matching
+"""
+
+import cv2
+import json
+import os
+import sys
+import random
+import shapely.geometry as sg
+from shapely.ops import unary_union
+import numpy as np
+from svg.path import parse_path
+from xml.dom import minidom
+
+
+# ==============================
+# SVG / Path Helpers
+# ==============================
+
+def get_point_at(path, distance, scale, offset):
+    pos = path.point(distance)
+    pos += offset
+    pos *= scale
+    return pos.real, pos.imag
+
+
+def points_from_path(path, density, scale, offset):
+    step = int(path.length() * density)
+    last_step = step - 1
+
+    if last_step == 0:
+        yield get_point_at(path, 0, scale, offset)
+        return
+
+    for distance in range(step):
+        yield get_point_at(
+            path, distance / last_step, scale, offset)
+
+
+def points_from_doc(doc, density=5, scale=1, offset=0):
+    offset = offset[0] + offset[1] * 1j
+    points = []
+    for element in doc.getElementsByTagName("path"):
+        for path in parse_path(element.getAttribute("d")):
+            points.extend(points_from_path(
+                path, density, scale, offset))
+    return points
+
+
+# ==============================
+# Coordinate Transforms
+# ==============================
+
+def makemeahanzi_to_display(pts):
+    """
+    Apply MakeMeAHanzi display transform: scale(1,-1) translate(0,-900).
+    Result: (x, 900 - y) for standard y-increases-downward display.
+    """
+    pts = np.asarray(pts, dtype=np.float32)
+    if len(pts) == 0:
+        return pts
+    out = pts.copy()
+    out[:, 1] = 900.0 - pts[:, 1]
+    return out
+
+
+def makemeahanzi_to_box_px(pts, bbox_px):
+    """
+    Apply MakeMeAHanzi transform and map to bbox pixels.
+    Maps 0-1024 coordinate range to bbox pixel range.
+    """
+    pts = np.asarray(pts, dtype=np.float32)
+    if len(pts) == 0:
+        return pts
+    out = makemeahanzi_to_display(pts)
+    bw = bbox_px[2] - bbox_px[0]
+    bh = bbox_px[3] - bbox_px[1]
+    out[:, 0] = bbox_px[0] + (out[:, 0] * bw) / 1024
+    out[:, 1] = bbox_px[1] + (out[:, 1] * bh) / 1024
+    return out
+
+
+def points_from_stroke(path_d, density=1):
+    """Get points for a single stroke (SVG path d string)."""
+    path = parse_path(path_d)
+    pts = []
+    for segment in path:
+        seg_pts = list(points_from_path(segment, density, 1, 0j))
+        pts.extend(seg_pts)
+    return pts
+
+
+# ==============================
+# Data Loading
+# ==============================
+
+def load_graphics(path: str):
+    """Load graphics.txt; return dict char -> {strokes, medians}."""
+    data = {}
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            obj = json.loads(line)
+            char = obj.get("character")
+            if char:
+                data[char] = obj
+    return data
+
+
+def character_to_stroke_svgs(char: str, obj: dict, viewbox: str = "0 0 1024 1024") -> list:
+    strokes = obj.get("strokes", [])
+    stroke_svgs = []
+    for d in strokes:
+        path = f'    <path d="{d}" fill="none" stroke="black" stroke-width="4"/>'
+        stroke_svg = f'''<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="{viewbox}">
+  <g transform="scale(1, -1) translate(0, -900)">
+{path}
+  </g>
+</svg>
+'''
+        stroke_svgs.append(stroke_svg)
+    return stroke_svgs
+
+
+# Load data (path relative to this file)
+_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA = load_graphics(os.path.join(_DIR, "makemeahanzi", "graphics.txt"))
+cached_character_data = {}
+
+
+# ==============================
+# CharacterData Class
+# ==============================
+
+class CharacterData:
+    def __init__(self, char: str):
+        self.char = char
+        self.obj = DATA[char]
+        self.stroke_svgs = character_to_stroke_svgs(char, self.obj)
+        self.stroke_polygons = []
+        self.num_strokes = len(self.stroke_svgs)
+        for i, stroke_svg in enumerate(self.stroke_svgs):
+            doc = minidom.parseString(stroke_svg)
+            pts = np.array(points_from_doc(doc, density=0.5, scale=1, offset=(0, 0)))
+            self.stroke_polygons.append(sg.Polygon(pts))
+        self.union = unary_union(self.stroke_polygons)
+
+    def get_stroke_midline(self, stroke_idx: int, bbox_px):
+        """Get median points for a stroke, transformed to pixel coords."""
+        medians = self.obj.get("medians", [])
+        if stroke_idx < 0 or stroke_idx >= len(medians):
+            return np.array([])
+        pts = np.array(medians[stroke_idx])
+        pts = makemeahanzi_to_box_px(pts, bbox_px)
+        return pts
+
+    def draw_stroke(self, frame, stroke_idx: int, bbox_px, filled=False, color=(0, 0, 255)):
+        """Draw a single stroke outline or filled."""
+        if stroke_idx >= self.num_strokes or stroke_idx < 0:
+            return
+        pts = self.stroke_polygons[stroke_idx].exterior.coords
+        pts = makemeahanzi_to_box_px(pts, bbox_px).astype(np.int32)
+        if filled:
+            cv2.fillPoly(frame, [pts], color)
+        else:
+            cv2.polylines(frame, [pts], isClosed=True, color=color, thickness=2)
+
+    def draw_stroke_midline(self, frame, stroke_idx: int, bbox_px, color=(0, 0, 255), thickness=2):
+        """Draw the median line of a stroke."""
+        medians = self.obj.get("medians", [])
+        if stroke_idx < 0 or stroke_idx >= len(medians):
+            return
+        pts = self.get_stroke_midline(stroke_idx, bbox_px).astype(np.int32)
+        cv2.polylines(frame, [pts], isClosed=False, color=color, thickness=thickness)
+
+    def draw_union(self, frame, bbox_px, color=(0, 0, 255), thickness=2):
+        """Draw the union outline of all strokes."""
+        if isinstance(self.union, sg.MultiPolygon):
+            for polygon in self.union.geoms:
+                pts = polygon.exterior.coords
+                pts = makemeahanzi_to_box_px(pts, bbox_px).astype(np.int32)
+                cv2.polylines(frame, [pts], isClosed=True, color=color, thickness=thickness)
+        else:
+            pts = self.union.exterior.coords
+            pts = makemeahanzi_to_box_px(pts, bbox_px).astype(np.int32)
+            cv2.polylines(frame, [pts], isClosed=True, color=color, thickness=thickness)
+
+    def draw_full_character(self, frame, bbox_px, current_stroke_idx: int = -1):
+        """Draw full character with current stroke median highlighted."""
+        self.draw_union(frame, bbox_px)
+        if current_stroke_idx >= 0:
+            self.draw_stroke_midline(frame, current_stroke_idx, bbox_px)
+        if current_stroke_idx > 0:
+            for i in range(min(current_stroke_idx, self.num_strokes)):
+                self.draw_stroke(frame, i, bbox_px, filled=True)
+
+
+def get_character(char: str) -> "CharacterData":
+    """Get or create cached CharacterData for a character."""
+    if char not in cached_character_data:
+        cached_character_data[char] = CharacterData(char)
+    return cached_character_data[char]
+
+
+# ==============================
+# Curated Character List
+# ==============================
+
+CHARACTER_LIST = [
+    {"char": "一", "pinyin": "yī", "english": "one"},
+    {"char": "二", "pinyin": "èr", "english": "two"},
+    {"char": "三", "pinyin": "sān", "english": "three"},
+    {"char": "四", "pinyin": "sì", "english": "four"},
+    {"char": "五", "pinyin": "wǔ", "english": "five"},
+    {"char": "六", "pinyin": "liù", "english": "six"},
+    {"char": "七", "pinyin": "qī", "english": "seven"},
+    {"char": "八", "pinyin": "bā", "english": "eight"},
+    {"char": "九", "pinyin": "jiǔ", "english": "nine"},
+    {"char": "十", "pinyin": "shí", "english": "ten"},
+    {"char": "人", "pinyin": "rén", "english": "person"},
+    {"char": "大", "pinyin": "dà", "english": "big"},
+    {"char": "小", "pinyin": "xiǎo", "english": "small"},
+    {"char": "上", "pinyin": "shàng", "english": "up/above"},
+    {"char": "下", "pinyin": "xià", "english": "down/below"},
+    {"char": "中", "pinyin": "zhōng", "english": "middle"},
+    {"char": "山", "pinyin": "shān", "english": "mountain"},
+    {"char": "水", "pinyin": "shuǐ", "english": "water"},
+    {"char": "火", "pinyin": "huǒ", "english": "fire"},
+    {"char": "木", "pinyin": "mù", "english": "wood/tree"},
+    {"char": "日", "pinyin": "rì", "english": "sun/day"},
+    {"char": "月", "pinyin": "yuè", "english": "moon/month"},
+    {"char": "口", "pinyin": "kǒu", "english": "mouth"},
+    {"char": "手", "pinyin": "shǒu", "english": "hand"},
+    {"char": "目", "pinyin": "mù", "english": "eye"},
+    {"char": "耳", "pinyin": "ěr", "english": "ear"},
+    {"char": "田", "pinyin": "tián", "english": "field"},
+    {"char": "土", "pinyin": "tǔ", "english": "earth/soil"},
+    {"char": "天", "pinyin": "tiān", "english": "sky/heaven"},
+    {"char": "女", "pinyin": "nǚ", "english": "woman"},
+    {"char": "子", "pinyin": "zǐ", "english": "child/son"},
+    {"char": "王", "pinyin": "wáng", "english": "king"},
+]
+
+# Filter to only characters present in MakeMeAHanzi data
+CHARACTER_LIST = [c for c in CHARACTER_LIST if c["char"] in DATA]
+
+
+def get_random_character_info() -> dict:
+    """Get a random character entry from the curated list."""
+    return random.choice(CHARACTER_LIST)
+
+
+# ==============================
+# Standalone Demo
+# ==============================
+
+if __name__ == "__main__":
+    character = "会"
+    character_data = get_character(character)
+    CAMERA_INDEX = 0
+    cap = cv2.VideoCapture(CAMERA_INDEX)
+    if not cap.isOpened():
+        print("Error: Camera failed to initialize.")
+        sys.exit(1)
+    cur_stroke = 0
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        frame = cv2.flip(frame, 1)
+        h, w, _ = frame.shape
+        character_data.draw_full_character(frame, (0, 0, w, h), current_stroke_idx=cur_stroke)
+        cv2.imshow("frame", frame)
+        key = cv2.waitKey(1) & 0xFF
+        if key == 27:
+            break
+        if key == ord("w"):
+            cur_stroke += 1
+        elif key == ord("s"):
+            cur_stroke -= 1
+    cap.release()
+    cv2.destroyAllWindows()

@@ -55,13 +55,21 @@ def check_camera():
     print("Camera accessible")
     return True
 
-def check_characters_json():
-    """Check if characters.json exists."""
-    if not os.path.exists('characters.json'):
-        print("❌ characters.json not found")
+def check_character_data():
+    """Check if MakeMeAHanzi graphics.txt exists and characters module loads."""
+    graphics_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 'makemeahanzi', 'graphics.txt')
+    if not os.path.exists(graphics_path):
+        print("❌ makemeahanzi/graphics.txt not found")
         return False
-    
-    print("Character database loaded")
+
+    try:
+        from characters import CHARACTER_LIST
+        print(f"Character database loaded ({len(CHARACTER_LIST)} characters)")
+    except Exception as e:
+        print(f"❌ Failed to load characters module: {e}")
+        return False
+
     return True
 
 def main():
@@ -72,7 +80,7 @@ def main():
     checks = [
         ("Dependencies", check_dependencies),
         ("Camera", check_camera),
-        ("Character DB", check_characters_json)
+        ("Character DB", check_character_data)
     ]
     
     all_passed = True
