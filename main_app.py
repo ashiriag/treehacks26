@@ -162,12 +162,11 @@ MENU_BUTTON_Y_START = 130
 MENU_BUTTON_SPACING = 100
 MENU_LABELS = [
     ("Teaching Mode", "Learn stroke-by-stroke with guides"),
-    ("Free Draw", "Draw with index finger (no pinch)"),
-    ("Pinyin Recognition", "See pinyin, recall character"),
-    ("English Translation", "See English, recall character"),
+    ("Pinyin Recognition", "See pinyin, draw the character"),
+    ("English Translation", "See English, draw the character"),
     ("Quit", "Exit application"),
 ]
-MENU_ACTIONS = ["teaching", "free_draw", "pinyin", "english", "quit"]
+MENU_ACTIONS = ["teaching", "pinyin", "english", "quit"]
 
 # --- In-game nav buttons (bottom-right) ---
 NAV_BTN_W = 100
@@ -398,7 +397,7 @@ class TutorApp:
         self.hovered_nav_idx = -1          # in-game nav button under fingertip
         self.should_quit = False           # set True to exit main loop
         self._last_frame_shape = (WINDOW_HEIGHT, WINDOW_WIDTH)
-        self.free_draw_lost_frames = 0     # frames since hand was last seen (free_draw)
+        self.free_draw_lost_frames = 0     # frames since hand was last seen (free-draw modes)
 
         # Drawing state
         self.user_strokes: list = []           # completed: list of (pts_px, seg_colors)
@@ -627,14 +626,14 @@ class TutorApp:
             tip = hand_lms[INDEX_FINGER_TIP]
             thumb = hand_lms[THUMB_TIP]
 
-            is_free = (self.mode == "free_draw")
+            is_free = self.mode in ("pinyin", "english")
 
             if is_free:
-                # Free draw: cursor follows index finger tip, always active
+                # Free draw modes: cursor follows index finger tip, always active
                 x = int(tip.x * w)
                 y = int(tip.y * h)
             else:
-                # Normal: cursor is midpoint of thumb + index
+                # Teaching / other: cursor is midpoint of thumb + index
                 x = int((tip.x + thumb.x) / 2 * w)
                 y = int((tip.y + thumb.y) / 2 * h)
             self.tip_xy = (x, y)
@@ -652,7 +651,7 @@ class TutorApp:
                 self.pinch_just_started = True
                 set_drawing_state(True)  # Send haptic feedback: start drawing
 
-            # In free_draw, drawing is always active (index finger tracks)
+            # In pinyin/english, drawing is always active (index finger tracks)
             # but nav buttons still require a pinch to activate.
             free_draw_active = is_free and not self.character_complete
 
@@ -681,15 +680,15 @@ class TutorApp:
             self.pinch_active = False
             self.hovered_nav_idx = -1
 
-        # End stroke if pinch released while drawing (normal modes only)
-        if not self.pinch_active and self.drawing and self.mode != "free_draw":
+        # End stroke if pinch released while drawing (teaching mode only)
+        if not self.pinch_active and self.drawing and self.mode == "teaching":
             self.drawing = False
             self.prev_point = None
             self.finish_stroke()
             set_drawing_state(False)  # Send haptic feedback: stop drawing
 
-        # In free_draw, tolerate brief hand loss — use grace period
-        if self.mode == "free_draw" and self.drawing:
+        # In free-draw modes, tolerate brief hand loss — use grace period
+        if self.mode in ("pinyin", "english") and self.drawing:
             if result.hand_landmarks:
                 self.free_draw_lost_frames = 0
             else:
@@ -791,7 +790,7 @@ class TutorApp:
                             )
 
     def _handle_free_draw_input(self, x: int, y: int):
-        """Handle stroke drawing in free_draw mode — index finger always active."""
+        """Handle stroke drawing with index finger always active (pinyin/english modes)."""
         if not self.drawing:
             # --- stroke start ---
             self.drawing = True
@@ -1276,72 +1275,16 @@ class TutorApp:
         self._draw_calibration_overlay(display)
         return display
 
-    def render_free_draw_mode(self, frame: np.ndarray) -> np.ndarray:
-        """Free draw mode: index finger always active, shows outline, auto-advances."""
-        display = frame.copy()
-        if not self.char_data:
-            self.select_new_character()
-
-        bbox = self.drawing_bbox
-        cd = self.char_data
-
-        # Background guides — drawing box only, no outline
-        self._draw_drawing_box(display)
-
-        # Completed strokes (filled green)
-        for i in range(self.current_stroke_idx):
-            cd.draw_stroke(display, i, bbox, filled=True, color=COLOR_COMPLETED)
-        
-        cd.draw_partial_stroke(display, bbox)
-
-        # # Current stroke median (yellow) + animated arrow
-        # if not self.character_complete and self.current_stroke_idx < cd.num_strokes:
-        #     cd.draw_stroke_midline(
-        #         display, self.current_stroke_idx, bbox,
-        #         color=COLOR_CURRENT_MEDIAN, thickness=3
-        #     )
-        #     median_px = cd.get_stroke_midline(self.current_stroke_idx, bbox)
-        #     if len(median_px) > 0:
-        #         progress = ((time.time() - self.anim_start) % 2.0) / 2.0
-        #         self._draw_animated_arrow(display, median_px, progress)
-
-        # User strokes (coloured per-segment)
-        self._draw_user_strokes(display)
-
-        # Direction arrows + live feedback
-        self._draw_direction_arrows(display)
-        self._draw_live_feedback(display)
-
-        # Title
-        title = (
-            f"Free Draw: {self.char_info['char']}  "
-            f"({self.char_info['pinyin']}) - {self.char_info['english']}"
-        )
-        put_text(display, title, (20, 55), 32, COLOR_TEXT)
-
-        # # Fingertip cursor
-        # if self.tip_xy is not None:
-        #     cx, cy = self.tip_xy
-        #     cv2.circle(display, (cx, cy), 8, (0, 255, 255), -1)
-        #     cv2.circle(display, (cx, cy), 12, (0, 255, 255), 2)
-
-        if self.character_complete:
-            status = "Character complete!"
-        else:
-            status = f"Stroke {self.current_stroke_idx + 1} / {cd.num_strokes}"
-
-        self._draw_status_bar(display, status)
-        self._draw_shortcuts(display)
-        self._draw_nav_buttons(display)
-        self._draw_calibration_overlay(display)
-        return display
-
     def render_recall_mode(self, frame: np.ndarray) -> np.ndarray:
+        """Recall modes (pinyin/english) — free-draw input with prompt."""
         display = frame.copy()
         h, w = display.shape[:2]
 
         if not self.char_data:
             self.select_new_character()
+
+        bbox = self.drawing_bbox
+        cd = self.char_data
 
         if self.mode == "pinyin":
             mode_title = "Pinyin Mode"
@@ -1350,28 +1293,35 @@ class TutorApp:
             mode_title = "Translation Mode"
             prompt = f"Write: {self.char_info['english'].upper()}"
 
-        put_text(display, mode_title, (20, 55), 32, COLOR_TEXT_TITLE)
-        put_text(display, prompt, (20, 95), 38, COLOR_TEXT_TITLE)
-
-        bbox = self.drawing_bbox
+        # Drawing box (no outline — recall is a test)
         self._draw_drawing_box(display)
+
+        # Completed strokes (filled)
+        for i in range(self.current_stroke_idx):
+            cd.draw_stroke(display, i, bbox, filled=True, color=COLOR_COMPLETED)
+
+        # Partial stroke progress
+        cd.draw_partial_stroke(display, bbox)
+
+        # User strokes
         self._draw_user_strokes(display)
         self._draw_direction_arrows(display)
         self._draw_live_feedback(display)
 
+        # Title + prompt
+        put_text(display, mode_title, (20, 55), 32, COLOR_TEXT_TITLE)
+        put_text(display, prompt, (20, 95), 38, COLOR_TEXT_TITLE)
+
         # Reveal character on completion
         if self.character_complete:
-            cd = self.char_data
             cd.draw_union(display, bbox, color=COLOR_COMPLETED, thickness=2)
             for i in range(cd.num_strokes):
                 cd.draw_stroke(display, i, bbox, filled=True, color=COLOR_COMPLETED)
-
-        if self.character_complete:
             status = (f"Correct! {self.char_info['char']} "
                       f"({self.char_info['pinyin']})")
         else:
             status = (f"Stroke {self.current_stroke_idx + 1} / "
-                      f"{self.char_data.num_strokes}")
+                      f"{cd.num_strokes}")
 
         self._draw_status_bar(display, status)
         self._draw_shortcuts(display)
@@ -1392,7 +1342,7 @@ class TutorApp:
                  (w // 2 - 300, 80), 60, (150, 200, 255))
 
         # Interactive buttons
-        keys = ["1", "2", "3", "4", "Q"]
+        keys = ["1", "2", "3", "Q"]
         for i, ((title, desc), key) in enumerate(zip(MENU_LABELS, keys)):
             by = MENU_BUTTON_Y_START + i * MENU_BUTTON_SPACING
             bx = MENU_BUTTON_X
@@ -1427,8 +1377,8 @@ class TutorApp:
             if self.pinch_active:
                 cv2.circle(display, (cx, cy), 8, col, -1)
 
-        put_text(display, "Pinch a button or press 1/2/3/4/Q",
-                 (w // 2 - 280, h - 60), 28, COLOR_TEXT)
+        put_text(display, "Pinch a button or press 1/2/3/Q",
+                 (w // 2 - 260, h - 60), 28, COLOR_TEXT)
         return display
 
     # ----------------------------
@@ -1441,12 +1391,9 @@ class TutorApp:
                 self.mode = "teaching"
                 self.select_new_character()
             elif key == ord('2'):
-                self.mode = "free_draw"
-                self.select_new_character()
-            elif key == ord('3'):
                 self.mode = "pinyin"
                 self.select_new_character()
-            elif key == ord('4'):
+            elif key == ord('3'):
                 self.mode = "english"
                 self.select_new_character()
             elif key == ord('q'):
@@ -1501,8 +1448,6 @@ class TutorApp:
                 display = self.render_mode_select(frame)
             elif self.mode == "teaching":
                 display = self.render_teaching_mode(frame)
-            elif self.mode == "free_draw":
-                display = self.render_free_draw_mode(frame)
             elif self.mode in ("pinyin", "english"):
                 display = self.render_recall_mode(frame)
             else:
