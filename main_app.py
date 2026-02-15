@@ -1237,9 +1237,8 @@ class TutorApp:
         bbox = self.drawing_bbox
         cd = self.char_data
 
-        # Background guides — full outline always visible
+        # Background guides — drawing box only, no outline
         self._draw_drawing_box(display)
-        cd.draw_union(display, bbox, color=COLOR_GUIDE_OUTLINE, thickness=2)
 
         # Completed strokes (filled green)
         for i in range(self.current_stroke_idx):

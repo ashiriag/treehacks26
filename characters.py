@@ -6,7 +6,7 @@ Loads MakeMeAHanzi graphics.txt and provides:
 - Curated CHARACTER_LIST with pinyin/english metadata
 - Median-based stroke data for matching
 """
-
+import math
 import cv2
 import json
 import os
@@ -203,10 +203,18 @@ class CharacterData:
         """Draw the union outline of all strokes."""
         if isinstance(self.union, sg.MultiPolygon):
             for polygon in self.union.geoms:
+                for interior in polygon.interiors:
+                    interior_pts = interior.coords
+                    interior_pts = resize_to_box(interior_pts, bbox_px).astype(np.int32)
+                    cv2.polylines(frame, [interior_pts], isClosed=True, color=color, thickness=thickness)
                 pts = polygon.exterior.coords
                 pts = resize_to_box(pts, bbox_px).astype(np.int32)
                 cv2.polylines(frame, [pts], isClosed=True, color=color, thickness=thickness)
         else:
+            for interior in self.union.interiors:
+                interior_pts = interior.coords
+                interior_pts = resize_to_box(interior_pts, bbox_px).astype(np.int32)
+                cv2.polylines(frame, [interior_pts], isClosed=True, color=color, thickness=thickness)
             pts = self.union.exterior.coords
             pts = resize_to_box(pts, bbox_px).astype(np.int32)
             cv2.polylines(frame, [pts], isClosed=True, color=color, thickness=thickness)
@@ -222,41 +230,76 @@ class CharacterData:
     
 
     def update_partial_stroke(self, current_stroke_idx, movement):
-        """Update the partial stroke of the character."""
+        """Update the partial stroke of the character.
+
+        Progress is a float where the integer part is the segment index and
+        the fractional part is the interpolation factor between that median
+        point and the next.  The splitting position is linearly interpolated
+        so the reveal slides smoothly along the median instead of jumping.
+        """
         if current_stroke_idx < 0:
-            return
-        move_dir = movement / np.linalg.norm(movement)
-        current_medians = self.stroke_medians[current_stroke_idx] 
-        d_dir = current_medians[1] - current_medians[0]
+            return False
+        move_norm = np.linalg.norm(movement)
+        if move_norm < 1e-8:
+            return False
+        move_dir = movement / move_norm
+        current_medians = self.stroke_medians[current_stroke_idx]
+        n = len(current_medians)
+        if n < 2:
+            return True  # degenerate stroke
+
+        d_dir = None
         done = False
-        for i in range(10):
+        print(self.partial_stroke_progress)
+        min_progress = math.floor(self.partial_stroke_progress)
+        for _ in range(4):
             pp_int = int(self.partial_stroke_progress)
-            if pp_int + 1 >= len(current_medians):
+            if pp_int + 1 >= n:
                 done = True
                 break
-            #print(current_medians)
-            print(self.partial_stroke_progress/len(current_medians))
             d_next = current_medians[pp_int + 1] - current_medians[pp_int]
             d_len = np.linalg.norm(d_next)
+            if d_len < 1e-8:
+                self.partial_stroke_progress = float(pp_int + 1)
+                continue
             d_dir = d_next / d_len
-            prog = np.dot(d_dir, move_dir)
-            if prog > 0.0:
-                self.partial_stroke_progress +=  prog/d_len /150
-            else:
+            prog = np.dot(d_dir, movement)
+            self.partial_stroke_progress += prog / d_len / 2000
+            if prog < 0:
                 break
+
+        # Clamp progress
+        self.partial_stroke_progress = max(self.partial_stroke_progress, min_progress)
+
         if d_dir is not None:
-            cur_pos = current_medians[int(self.partial_stroke_progress)]
+            # Interpolate position between median[pp_int] and median[pp_int+1]
+            pp_int = int(self.partial_stroke_progress)
+            frac = self.partial_stroke_progress - pp_int
+            if pp_int + 1 < n:
+                cur_pos = (1.0 - frac) * current_medians[pp_int] + frac * current_medians[pp_int + 1]
+                # Direction for the splitting line
+                d_seg = current_medians[pp_int + 1] - current_medians[pp_int]
+                seg_len = np.linalg.norm(d_seg)
+                if seg_len > 1e-8:
+                    d_dir = d_seg / seg_len
+            else:
+                cur_pos = current_medians[-1]
+
             perpendicular_dir = np.array([-d_dir[1], d_dir[0]])
-            line_length = 10
-            splitting_line = LineString([cur_pos - perpendicular_dir * line_length, cur_pos + perpendicular_dir * line_length])
+            line_length = 0.08
+            splitting_line = LineString([
+                cur_pos - perpendicular_dir * line_length,
+                cur_pos + perpendicular_dir * line_length
+            ])
             polygons = split(self.stroke_polygons[current_stroke_idx], splitting_line)
             if len(polygons.geoms) > 1:
                 for polygon in polygons.geoms:
-                    if sg.Point(current_medians[0]).within(polygon):
+                    if sg.Point(current_medians[0]).within(polygon) and not sg.Point(current_medians[-1]).within(polygon):
                         self.partial_stroke_polygon = polygon
                         break
             else:
                 self.partial_stroke_polygon = None
+
         if done:
             self.partial_stroke_progress = 0
             self.partial_stroke_polygon = None
@@ -337,7 +380,7 @@ def get_random_character_info() -> dict:
 # ==============================
 
 if __name__ == "__main__":
-    character = "会"
+    character = "田"
     character_data = get_character(character)
     CAMERA_INDEX = 0
     cap = cv2.VideoCapture(CAMERA_INDEX)
