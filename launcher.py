@@ -48,7 +48,7 @@ def check_dependencies():
 def check_camera():
     """Check if camera is accessible."""
     import cv2    
-    cap = cv2.VideoCapture(2)
+    cap = cv2.VideoCapture(0)
     if not cap.isOpened():
         print("[ERROR] Camera not accessible")
         print("macOS: System Preferences > Security & Privacy > Camera > Grant access")
