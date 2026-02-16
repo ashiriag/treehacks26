@@ -5,11 +5,8 @@
 
 #define MOTOR_PIN 5
 
-// const char* ssid = "Treehacks-2026";
-// const char* password = "treehacks2026!";
-
 const char* ssid = "Luke’s iPhone";
-const char* password = "hihihihi";
+const char* password = "";
 
 extern "C" {
   #include "user_interface.h"
