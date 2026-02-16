@@ -1,6 +1,6 @@
 # Freestroke
 
-###Inspiration 
+### Inspiration 
 Learning character-based languages like Chinese can feel overwhelming, especially online. Apps often reduce writing to tapping pre-made strokes or tracing on a screen, which doesn’t build true muscle memory. Inspired by the physicality of handwriting practice and the importance of stroke order in languages like Chinese, we wanted to recreate the embodied experience of writing, but without pen and paper. 
 
 Freestroke was born from the idea that language learning should be active, immersive, and intuitive. We combine motion, haptics, and computer vision, turning the air around you into a canvas.
